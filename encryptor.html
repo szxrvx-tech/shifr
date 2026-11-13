@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AES-шифратор</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a24; --accent:#5b8cff; --accent2:#3ddc97;
+    --text:#e8eaf0; --muted:#8a90a3; --err:#ff6b6b; --border:#262a38;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:'Segoe UI',Roboto,Arial,sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card{
+    width:100%; max-width:640px; background:var(--panel);
+    border:1px solid var(--border); border-radius:16px; padding:28px 28px 22px;
+    box-shadow:0 20px 60px rgba(0,0,0,.4);
+  }
+  h1{margin:0 0 4px; font-size:22px;}
+  .sub{color:var(--muted); font-size:13px; margin:0 0 22px;}
+  label{display:block; font-size:13px; color:var(--muted); margin:16px 0 6px;}
+  textarea, input{
+    width:100%; background:#10121a; border:1px solid var(--border); color:var(--text);
+    border-radius:10px; padding:10px 12px; font-size:14px; font-family:inherit;
+    resize:vertical; outline:none; transition:border-color .15s;
+  }
+  textarea{min-height:90px;}
+  textarea:focus, input:focus{border-color:var(--accent);}
+  .row{display:flex; gap:10px; margin-top:18px; flex-wrap:wrap;}
+  button{
+    flex:1; min-width:140px; padding:11px 16px; border-radius:10px; border:none;
+    font-size:14px; font-weight:600; cursor:pointer; transition:transform .1s, opacity .15s;
+  }
+  button:active{transform:scale(.97);}
+  #enc{background:var(--accent); color:#fff;}
+  #dec{background:var(--accent2); color:#06281b;}
+  #copy{background:#262a38; color:var(--text); flex:0 0 auto;}
+  .status{margin-top:14px; font-size:13px; min-height:18px;}
+  .status.ok{color:var(--accent2);}
+  .status.err{color:var(--err);}
+  .hint{color:var(--muted); font-size:12px; margin-top:22px; line-height:1.5;}
+  code{background:#10121a; padding:1px 5px; border-radius:5px;}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔐 AES-256 шифратор</h1>
+    <p class="sub">Шифрует/расшифровывает текст паролем. Всё происходит в браузере — ничего не уходит на сервер.</p>
+
+    <label for="text">Текст</label>
+    <textarea id="text" placeholder="Введи текст для шифрования или вставь зашифрованную строку для расшифровки"></textarea>
+
+    <label for="pass">Пароль</label>
+    <input id="pass" type="password" placeholder="Пароль">
+
+    <div class="row">
+      <button id="enc">Зашифровать</button>
+      <button id="dec">Расшифровать</button>
+    </div>
+
+    <label for="out">Результат</label>
+    <textarea id="out" readonly placeholder="Здесь появится результат"></textarea>
+    <div class="row">
+      <button id="copy">Скопировать результат</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <p class="hint">
+      Алгоритм: AES-256-GCM, ключ получается из пароля через PBKDF2-SHA256
+      (100 000 итераций) со случайной солью. Формат результата —
+      <code>base64(соль + nonce + шифротекст)</code>, он совпадает с форматом
+      консольного скрипта <code>cipher.py</code> — можно зашифровать тут,
+      расшифровать в Python, и наоборот.
+    </p>
+  </div>
+
+<script>
+const SALT_LEN = 16;   // байт
+const IV_LEN = 12;     // байт, стандарт для AES-GCM
+const PBKDF2_ITERS = 100000;
+
+const $ = (id) => document.getElementById(id);
+const textEl = $('text'), passEl = $('pass'), outEl = $('out'), statusEl = $('status');
+
+function setStatus(msg, isErr) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + (isErr ? 'err' : 'ok');
+}
+
+function bufToBase64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function base64ToBuf(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+async function deriveKey(password, salt) {
+  const baseKey = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptText(plaintext, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_LEN));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+  const key = await deriveKey(password, salt);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext)
+  );
+  const blob = new Uint8Array(SALT_LEN + IV_LEN + ciphertext.byteLength);
+  blob.set(salt, 0);
+  blob.set(iv, SALT_LEN);
+  blob.set(new Uint8Array(ciphertext), SALT_LEN + IV_LEN);
+  return bufToBase64(blob);
+}
+
+async function decryptText(tokenB64, password) {
+  let blob;
+  try {
+    blob = base64ToBuf(tokenB64.trim());
+  } catch {
+    throw new Error('Это не похоже на зашифрованную строку (не base64).');
+  }
+  if (blob.length < SALT_LEN + IV_LEN) throw new Error('Строка слишком короткая — повреждена.');
+
+  const salt = blob.slice(0, SALT_LEN);
+  const iv = blob.slice(SALT_LEN, SALT_LEN + IV_LEN);
+  const ciphertext = blob.slice(SALT_LEN + IV_LEN);
+
+  const key = await deriveKey(password, salt);
+  try {
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    return new TextDecoder().decode(plainBuf);
+  } catch {
+    throw new Error('Неверный пароль или данные повреждены.');
+  }
+}
+
+$('enc').addEventListener('click', async () => {
+  const text = textEl.value;
+  const password = passEl.value;
+  if (!text) return setStatus('Введи текст для шифрования.', true);
+  if (!password) return setStatus('Введи пароль.', true);
+  try {
+    outEl.value = await encryptText(text, password);
+    setStatus('Готово: текст зашифрован.', false);
+  } catch (e) {
+    setStatus('Ошибка: ' + e.message, true);
+  }
+});
+
+$('dec').addEventListener('click', async () => {
+  const token = textEl.value;
+  const password = passEl.value;
+  if (!token) return setStatus('Вставь зашифрованную строку.', true);
+  if (!password) return setStatus('Введи пароль.', true);
+  try {
+    outEl.value = await decryptText(token, password);
+    setStatus('Готово: текст расшифрован.', false);
+  } catch (e) {
+    setStatus('Ошибка: ' + e.message, true);
+  }
+});
+
+$('copy').addEventListener('click', async () => {
+  if (!outEl.value) return setStatus('Нечего копировать.', true);
+  try {
+    await navigator.clipboard.writeText(outEl.value);
+    setStatus('Результат скопирован в буфер обмена.', false);
+  } catch {
+    outEl.select();
+    document.execCommand('copy');
+    setStatus('Результат скопирован (через выделение).', false);
+  }
+});
+</script>
+</body>
+</html>
